@@ -1,0 +1,17 @@
+# Secrets (real credentials live here)
+config.py
+
+# Generated output
+repomix-output.txt
+code-reviews/
+docs/
+
+# MicroPython build artifacts
+build/
+__pycache__/
+*.pyc
+*.mpy
+
+# OS files
+.DS_Store
+Thumbs.db
