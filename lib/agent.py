@@ -223,16 +223,26 @@ class Agent:
     def _call_api(self):
         """Make a single API call to Claude. Returns parsed response or None."""
         import urequests
-        import usocket
 
-        # Set default socket timeout for all new sockets
+        # Try to set default socket timeout for all new sockets
         # This ensures TLS/DNS/read won't hang indefinitely
+        # Note: some MicroPython builds lack usocket.setdefaulttimeout
+        _has_sock_timeout = False
         old_timeout = None
         try:
+            import usocket
             old_timeout = usocket.getdefaulttimeout()
+            usocket.setdefaulttimeout(self.api_timeout)
+            _has_sock_timeout = True
         except Exception:
-            pass
-        usocket.setdefaulttimeout(self.api_timeout)
+            try:
+                import socket
+                old_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(self.api_timeout)
+                _has_sock_timeout = True
+            except Exception:
+                if self.debug:
+                    print("[agent] Warning: cannot set socket timeout")
 
         # Build request body
         body = {
@@ -296,7 +306,16 @@ class Agent:
 
         finally:
             # Restore previous socket timeout
-            usocket.setdefaulttimeout(old_timeout)
+            if _has_sock_timeout:
+                try:
+                    import usocket
+                    usocket.setdefaulttimeout(old_timeout)
+                except Exception:
+                    try:
+                        import socket
+                        socket.setdefaulttimeout(old_timeout)
+                    except Exception:
+                        pass
 
     def _estimate_message_tokens(self):
         """Rough token estimate for current messages (4 chars ≈ 1 token)."""
