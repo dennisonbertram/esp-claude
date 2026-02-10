@@ -12,6 +12,7 @@ from machine import I2C, Pin
 from lib.codec import ES7210, ES8311, start_mclk, stop_mclk
 from lib import audio
 from lib import speech
+from lib import display
 from lib.agent import Agent
 from lib.tools import ToolRegistry, register_system_tools, register_webhook_tools
 import config
@@ -71,6 +72,12 @@ def run():
         gc.collect()
         print("[voice] Hardware initialized")
 
+        # -- 1b. Initialize display --
+        print("[voice] Initializing display...")
+        display.init()
+        display.show_status("READY", "Initializing...")
+        print("[voice] Display initialized")
+
         # -- 2. Create agent --
         tools = ToolRegistry()
         register_system_tools(tools)
@@ -94,6 +101,7 @@ def run():
         # Pre-allocate recording buffer to avoid per-cycle heap fragmentation
         rec_buf = bytearray(16000 * 2 * 10)  # 10s at 16kHz 16-bit mono
 
+        display.show_status("READY", "Speak into the mic")
         print("\n=== ESP-Claude Voice Assistant ===")
         print("Speak into the microphone. Press Ctrl+C to stop.\n")
 
@@ -107,6 +115,10 @@ def run():
                 print("[voice] Cycle error: {}".format(e))
                 try:
                     pa.value(0)
+                except Exception:
+                    pass
+                try:
+                    display.show_status("ERROR", str(e)[:60])
                 except Exception:
                     pass
                 gc.collect()
@@ -126,6 +138,7 @@ def run():
             mic.deinit()
         if mclk_pwm is not None:
             stop_mclk(mclk_pwm)
+        display.deinit()
         gc.collect()
         print("[voice] Goodbye!")
 
@@ -138,6 +151,7 @@ def _voice_cycle(agent, pa, rec_buf):
     # -- Record --
     # BOX-3 primary mic is ES7210 CH1 mapped to I2S left slot.
     # Change to channel="right" or channel="mix" if audio is silent/weak.
+    display.show_status("LISTENING", "Speak now...")
     print("Listening...")
     t0 = time.ticks_ms() if config.DEBUG else 0
     pcm = audio.record(max_seconds=10, buf=rec_buf, channel="left")
@@ -156,6 +170,7 @@ def _voice_cycle(agent, pa, rec_buf):
     gc.collect()
 
     # -- Transcribe --
+    display.show_status("THINKING", "Transcribing...")
     print("Transcribing...")
     t0 = time.ticks_ms() if config.DEBUG else 0
     text = speech.transcribe(wav, config.OPENAI_API_KEY, debug=config.DEBUG)
@@ -167,6 +182,8 @@ def _voice_cycle(agent, pa, rec_buf):
 
     if not text or not text.strip():
         print("No speech detected")
+        display.show_status("LISTENING", "No speech detected")
+        time.sleep_ms(500)
         return
 
     # Skip Whisper hallucinations
@@ -178,9 +195,12 @@ def _voice_cycle(agent, pa, rec_buf):
     stripped = text.strip()
     if len(stripped) < 3 or stripped.lower() in _HALLUCINATIONS or len(text) > 500:
         print("Skipping noise/hallucination: {}".format(repr(text)))
+        display.show_status("LISTENING", "Didn't catch that...")
+        time.sleep_ms(500)
         return
 
     print("You said: {}".format(text))
+    display.show_status("THINKING", text[:60])
 
     # -- Agent --
     print("Thinking...")
@@ -193,9 +213,12 @@ def _voice_cycle(agent, pa, rec_buf):
 
     if not response:
         print("No response from agent")
+        display.show_status("ERROR", "No agent response")
+        time.sleep_ms(500)
         return
 
     print("Claude: {}".format(response))
+    display.show_status("SPEAKING", response[:60])
 
     # -- Synthesize --
     print("Speaking...")
@@ -223,4 +246,5 @@ def _voice_cycle(agent, pa, rec_buf):
         print("[voice] Total cycle: {}ms".format(total))
         print("[voice] Free memory: {} bytes".format(gc.mem_free()))
 
+    display.show_status("LISTENING", "Speak now...")
     print("---")
