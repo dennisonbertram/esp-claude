@@ -23,6 +23,9 @@ from examples.blinky import run
 # Security monitor — PIR motion sensor + buzzer
 # from examples.security import run
 
+# Voice assistant — mic + speaker on ESP32-S3-BOX-3
+# from examples.voice import run
+
 # --- Or write your own: ---
 # from my_app import run
 
