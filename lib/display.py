@@ -1,16 +1,20 @@
 """
-Minimal ST7789 display driver for ESP32-S3-BOX-3.
+ILI9342C display driver for ESP32-S3-BOX-3.
 
-Drives the 320x240 2.4" LCD via SPI. Renders text directly to the
-display controller's GRAM -- no full-screen framebuffer needed.
+Drives the 320x240 2.4" ILI9342C LCD via SPI. Renders text directly
+to the display controller's GRAM -- no full-screen framebuffer needed.
+
+The ESP32-S3-BOX-3 uses an ILI9342C controller (not ST7789).  The
+vendor-specific initialisation sequence below is taken from the
+official Espressif BSP (esp-bsp/bsp/esp-box-3).
 
 Hardware pins (from esp-bsp esp-box-3.h):
-    MOSI  = GPIO 6
-    SCLK  = GPIO 7
-    CS    = GPIO 5
-    DC    = GPIO 4
-    RST   = GPIO 48
-    BL    = GPIO 47
+    MOSI  = GPIO 6   (BSP_LCD_DATA0)
+    SCLK  = GPIO 7   (BSP_LCD_PCLK)
+    CS    = GPIO 5   (BSP_LCD_CS)
+    DC    = GPIO 4   (BSP_LCD_DC)
+    RST   = GPIO 48  (BSP_LCD_RST)
+    BL    = GPIO 47  (BSP_LCD_BACKLIGHT)
 
 Usage:
     from lib.display import init, show_status, deinit
@@ -34,7 +38,7 @@ _BL_PIN   = 47
 WIDTH  = 320
 HEIGHT = 240
 
-# --- ST7789 commands ---
+# --- ILI9342C / ILI9341 commands ---
 _SWRESET = 0x01
 _SLPOUT  = 0x11
 _NORON   = 0x13
@@ -161,7 +165,7 @@ _FONT = (
     b'\x08\x08\x2A\x1C\x08'  # ~
 )
 
-# --- State-related colors (RGB565 big-endian for ST7789) ---
+# --- State-related colors (RGB565 big-endian for ILI9342C) ---
 # RGB565: RRRRRGGGGGGBBBBB
 # Helper: rgb565(r, g, b) -> 16-bit value
 def _rgb565(r, g, b):
@@ -289,7 +293,7 @@ def _draw_char(ch, x, y, color, bg, scale):
 
 
 def init():
-    """Initialize the ST7789 display and turn on the backlight."""
+    """Initialize the ILI9342C display and turn on the backlight."""
     global _spi, _dc, _cs, _rst, _bl
 
     # Configure pins
@@ -302,9 +306,12 @@ def init():
     _dc.value(0)
 
     # SPI bus -- use SPI(1) which maps to SPI2_HOST on ESP32-S3.
-    # SPI(2) crashes on ESP32-S3 MicroPython with these pins.
-    # ST7789 supports up to 80MHz; 20MHz is conservative for bring-up.
-    _spi = SPI(1, baudrate=20000000, polarity=0, phase=0,
+    # The BSP uses SPI3_HOST (MicroPython SPI(2)), but SPI(2) crashes
+    # on some MicroPython builds with user-assigned pins.  SPI(1) works
+    # fine with arbitrary pin routing on ESP32-S3.
+    # ILI9342C supports up to 10MHz write clock per datasheet, but the
+    # Espressif BSP runs at 40MHz successfully; we do the same.
+    _spi = SPI(1, baudrate=40000000, polarity=0, phase=0,
                sck=Pin(_SCLK_PIN), mosi=Pin(_MOSI_PIN))
 
     # Hardware reset
@@ -315,33 +322,43 @@ def init():
     _rst.value(1)
     time.sleep_ms(120)
 
-    # ST7789 initialization sequence
-    _cmd(_SWRESET)
-    time.sleep_ms(150)
+    # ----- ILI9342C vendor-specific initialisation -----
+    # Sequence taken from Espressif BSP (esp-bsp/bsp/esp-box-3/esp-box-3.c).
+    # These commands configure power, gamma, and timing registers that the
+    # ILI9342C requires but a plain ST7789 does not.
 
-    _cmd(_SLPOUT)
-    time.sleep_ms(120)
+    _cmd(0xC8, b'\xFF\x93\x42')          # Enable extended command set
+    _cmd(0xC0, b'\x0E\x0E')              # Power Control 1
+    _cmd(0xC5, b'\xD0')                  # VCOM Control
+    _cmd(0xC1, b'\x02')                  # Power Control 2
+    _cmd(0xB4, b'\x02')                  # Display Inversion Control
+    # Positive Gamma Correction
+    _cmd(0xE0, b'\x00\x03\x08\x06\x13\x09\x39\x39'
+               b'\x48\x02\x0A\x08\x17\x17\x0F')
+    # Negative Gamma Correction
+    _cmd(0xE1, b'\x00\x28\x29\x01\x0D\x03\x3F\x33'
+               b'\x52\x04\x0F\x0E\x37\x38\x0F')
+    _cmd(0xB1, b'\x00\x1B')              # Frame Rate Control
+
+    # Memory data access control -- landscape, BGR colour order.
+    # The ILI9342C native orientation is 320x240 (landscape) so we
+    # only need BGR; no MV/MX/MY rotation flags required.
+    # The BSP applies mirror_x + mirror_y after panel init; we match
+    # that by setting MX | MY | BGR = 0xC8.
+    _cmd(_MADCTL, bytes([_MADCTL_MX | _MADCTL_MY | _MADCTL_BGR]))
 
     # Pixel format: 16-bit/pixel (RGB565)
     _cmd(_COLMOD, b'\x55')
-    time.sleep_ms(10)
 
-    # Memory data access control -- landscape orientation
-    # MV=1 (row/col swap) + MX=1 (mirror X) + BGR color order
-    # This gives 320 wide x 240 tall in landscape
-    _cmd(_MADCTL, bytes([_MADCTL_MV | _MADCTL_MX | _MADCTL_BGR]))
+    _cmd(0xB7, b'\x06')                  # Entry Mode Set
 
-    # Display inversion on (ST7789 typically needs this)
-    _cmd(_INVON)
-    time.sleep_ms(10)
-
-    # Normal display mode
-    _cmd(_NORON)
-    time.sleep_ms(10)
+    # Sleep out
+    _cmd(_SLPOUT)
+    time.sleep_ms(120)
 
     # Display on
     _cmd(_DISPON)
-    time.sleep_ms(10)
+    time.sleep_ms(120)
 
     # Backlight on
     _bl.value(1)
